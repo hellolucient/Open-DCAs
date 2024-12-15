@@ -63,6 +63,9 @@ const chartOptions = {
   }
 };
 
+// Format the sell volume
+const formatVolume = (volume: number) => Math.round(volume);
+
 export const DCADashboard: React.FC = () => {
   const [chartData, setChartData] = useState<Record<string, ChartDataPoint[]>>({});
   const [summaryData, setSummaryData] = useState<Record<string, TokenSummary>>({});
@@ -253,7 +256,7 @@ export const DCADashboard: React.FC = () => {
               <p className="text-xl font-bold">{summaryData?.LOGOS?.sellOrders}</p>
               <div className="mt-4">
                 <span className="text-gray-400">Sell Volume</span>
-                <p className="text-xl font-bold">{summaryData?.LOGOS?.sellVolume.toLocaleString()}</p>
+                <p className="text-xl font-bold">{formatVolume(summaryData?.LOGOS?.sellVolume).toLocaleString()}</p>
                 <p className="text-sm text-gray-500">${summaryData?.LOGOS?.sellVolumeUSDC.toLocaleString()} USDC</p>
               </div>
             </div>
@@ -344,7 +347,7 @@ export const DCADashboard: React.FC = () => {
               <p className="text-xl font-bold">{summaryData?.CHAOS?.sellOrders}</p>
               <div className="mt-4">
                 <span className="text-gray-400">Sell Volume</span>
-                <p className="text-xl font-bold">{summaryData?.CHAOS?.sellVolume.toLocaleString()}</p>
+                <p className="text-xl font-bold">{formatVolume(summaryData?.CHAOS?.sellVolume).toLocaleString()}</p>
                 <p className="text-sm text-gray-500">${summaryData?.CHAOS?.sellVolumeUSDC.toLocaleString()} USDC</p>
               </div>
             </div>

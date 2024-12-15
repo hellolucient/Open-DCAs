@@ -5,7 +5,6 @@ import type { TokenSummary, Position, ChartDataPoint } from '../types/dca';
 
 const LOGOS_MINT = 'HJUfqXoYjC653f2p33i84zdCC3jc4EuVnbruSe5kpump';
 const CHAOS_MINT = '8SgNwESovnbG1oNEaPVhg6CR9mTMSK7jPvcYRe3wpump';
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 interface DCAAccountType {
   publicKey: PublicKey;
@@ -30,7 +29,7 @@ interface DCAAccountType {
 class JupiterDCAAPI {
   private dca!: DCA;
   private connection: Connection;
-  private jupiterApiUrl = 'https://price.jup.ag/v4';
+  private jupiterApiUrl = 'https://api.jup.ag/price/v2';
 
   constructor() {
     this.connection = new Connection(import.meta.env.VITE_HELIUS_RPC_URL);
@@ -67,11 +66,14 @@ class JupiterDCAAPI {
   private async getCurrentPrice(mint: string): Promise<{ price: number; mint: string }> {
     try {
       const response = await fetch(
-        `${this.jupiterApiUrl}/price?ids=${mint}&vsToken=${USDC_MINT}`
+        `${this.jupiterApiUrl}?ids=${mint}`
       );
       const data = await response.json();
+      
+      const price = data.data?.[mint]?.price || 0;
+      console.log(`Price fetched for ${mint}:`, price);
       return {
-        price: data.data?.[mint]?.price || 0,
+        price: Number(price),
         mint
       };
     } catch (error) {
@@ -103,8 +105,8 @@ class JupiterDCAAPI {
       targetPrice: (account.account.minOutAmount?.toNumber() || 0) / Math.pow(10, 6),
       currentPrice: price,
       priceToken: "USDC",
-      estimatedOutput: account.account.minOutAmount?.toNumber() ? 
-        (account.account.inAmountPerCycle.toNumber() / account.account.minOutAmount.toNumber()) : undefined
+      estimatedOutput: type === "SELL" ? 
+        (account.account.inAmountPerCycle.toNumber() / Math.pow(10, 6)) * price : undefined
     };
   }
 
@@ -170,9 +172,17 @@ class JupiterDCAAPI {
         }
       });
 
-      // 3. Calculate summary first
-      const summary = this.calculateSummaryFromRawAccounts(accountsByToken);
-      console.log('Summary calculated:', summary);
+      // Get prices before calculating summary
+      const [logosPrice, chaosPrice] = await Promise.all([
+        this.getCurrentPrice(LOGOS_MINT),
+        this.getCurrentPrice(CHAOS_MINT)
+      ]);
+
+      // Calculate summary with prices
+      const summary = this.calculateSummaryFromRawAccounts(accountsByToken, {
+        LOGOS: logosPrice.price,
+        CHAOS: chaosPrice.price
+      });
 
       // 4. Then process individual positions
       const positions = [
@@ -183,11 +193,6 @@ class JupiterDCAAPI {
       ];
 
       // 5. Update prices and positions
-      const [logosPrice, chaosPrice] = await Promise.all([
-        this.getCurrentPrice(LOGOS_MINT),
-        this.getCurrentPrice(CHAOS_MINT)
-      ]);
-
       const positionsWithPrices = positions.map(pos => ({
         ...pos,
         currentPrice: pos.token === 'LOGOS' ? logosPrice.price : chaosPrice.price
@@ -222,10 +227,31 @@ class JupiterDCAAPI {
     }
   }
 
-  private calculateSummaryFromRawAccounts(accountsByToken: {
-    LOGOS: { buys: DCAAccountType[], sells: DCAAccountType[] },
-    CHAOS: { buys: DCAAccountType[], sells: DCAAccountType[] }
-  }): Record<string, TokenSummary> {
+  private calculateSummaryFromRawAccounts(
+    accountsByToken: {
+      LOGOS: { buys: DCAAccountType[], sells: DCAAccountType[] },
+      CHAOS: { buys: DCAAccountType[], sells: DCAAccountType[] }
+    },
+    prices: { LOGOS: number, CHAOS: number }
+  ): Record<string, TokenSummary> {
+    // Add more detailed debug logs
+    console.log('Current LOGOS price:', prices.LOGOS);
+    console.log('LOGOS sell accounts:', accountsByToken.LOGOS.sells.length);
+    
+    const logosSellVolumeUSDC = Math.round(accountsByToken.LOGOS.sells.reduce((sum, acc) => {
+      const volume = acc.account.inDeposited.sub(acc.account.inWithdrawn).toNumber() / Math.pow(10, 6);
+      const usdcValue = volume * prices.LOGOS;
+      console.log('LOGOS sell position calculation:', {
+        volume,
+        price: prices.LOGOS,
+        usdcValue,
+        runningTotal: sum + usdcValue
+      });
+      return sum + usdcValue;
+    }, 0));
+
+    console.log('Final LOGOS sell volume in USDC:', logosSellVolumeUSDC);
+
     const summary: Record<string, TokenSummary> = {
       LOGOS: {
         buyOrders: accountsByToken.LOGOS.buys.length,
@@ -234,10 +260,9 @@ class JupiterDCAAPI {
           sum + acc.account.inDeposited.sub(acc.account.inWithdrawn).toNumber() / Math.pow(10, 6), 0),
         sellVolume: accountsByToken.LOGOS.sells.reduce((sum, acc) => 
           sum + acc.account.inDeposited.sub(acc.account.inWithdrawn).toNumber() / Math.pow(10, 6), 0),
-        buyVolumeUSDC: accountsByToken.LOGOS.buys.reduce((sum, acc) => 
-          sum + acc.account.inAmountPerCycle.toNumber() / Math.pow(10, 6), 0),
-        sellVolumeUSDC: accountsByToken.LOGOS.sells.reduce((sum, acc) => 
-          sum + acc.account.inAmountPerCycle.toNumber() / Math.pow(10, 6), 0)
+        buyVolumeUSDC: Math.round(accountsByToken.LOGOS.buys.reduce((sum, acc) => 
+          sum + acc.account.inAmountPerCycle.toNumber() / Math.pow(10, 6), 0)),
+        sellVolumeUSDC: logosSellVolumeUSDC
       },
       CHAOS: {
         buyOrders: accountsByToken.CHAOS.buys.length,
@@ -246,10 +271,10 @@ class JupiterDCAAPI {
           sum + acc.account.inDeposited.sub(acc.account.inWithdrawn).toNumber() / Math.pow(10, 6), 0),
         sellVolume: accountsByToken.CHAOS.sells.reduce((sum, acc) => 
           sum + acc.account.inDeposited.sub(acc.account.inWithdrawn).toNumber() / Math.pow(10, 6), 0),
-        buyVolumeUSDC: accountsByToken.CHAOS.buys.reduce((sum, acc) => 
-          sum + acc.account.inAmountPerCycle.toNumber() / Math.pow(10, 6), 0),
-        sellVolumeUSDC: accountsByToken.CHAOS.sells.reduce((sum, acc) => 
-          sum + acc.account.inAmountPerCycle.toNumber() / Math.pow(10, 6), 0)
+        buyVolumeUSDC: Math.round(accountsByToken.CHAOS.buys.reduce((sum, acc) => 
+          sum + acc.account.inAmountPerCycle.toNumber() / Math.pow(10, 6), 0)),
+        sellVolumeUSDC: Math.round(accountsByToken.CHAOS.sells.reduce((sum, acc) => 
+          sum + (acc.account.inDeposited.sub(acc.account.inWithdrawn).toNumber() / Math.pow(10, 6)) * prices.CHAOS, 0))
       }
     };
 
